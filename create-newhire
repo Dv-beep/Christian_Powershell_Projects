@@ -1,0 +1,138 @@
+# Function to validate user input
+function GetName {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [ValidatePattern('[a-zA-Z\.]')]
+        [string]$Name
+    )
+
+    return $Name
+}
+
+# Prompt user for mailbox details
+Write-Host -ForegroundColor Green "Input New Hire Details"
+$FirstName = Read-Host -Prompt "Enter First Name"
+$LastName = Read-Host -Prompt "Enter Last Name"
+$aduser = "$FirstName.$LastName"
+$aduser = GetName -Name $aduser
+$UserPrincipalName = "$aduser@zoodigital.com"
+$OU = Read-Host -Prompt "Region: APAC, EMEA, US"
+
+# Determine OU path based on region
+switch ($OU) {
+    'APAC' {
+        $apac_OU = Read-Host -Prompt "IN1, IN2, JP1, SG1"
+        $OUPath = switch ($apac_OU) {
+            'IN1' { 'OU=IN1,OU=IN,OU=APAC,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'IN2' { 'OU=IN2,OU=IN,OU=APAC,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'JP1' { 'OU=JP1,OU=APAC,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'SG1' { 'OU=SG1,OU=APAC,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+        }
+    }
+    'EMEA' {
+        $emea_OU = Read-Host -Prompt "AE, DE1, ES1, IT1, UK1, UK2"
+        $OUPath = switch ($emea_OU) {
+            'AE' { 'OU=AE,OU=EMEA,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'DE1' { 'OU=DE1,OU=EMEA,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'ES1' { 'OU=ES1,OU=EMEA,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'IT1' { 'OU=IT1,OU=EMEA,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'UK1' { 'OU=UK1,OU=UK,OU=EMEA,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+            'UK2' { 'OU=UK2,OU=UK,OU=EMEA,OU=Users,OU=ZOO,DC=zoodigital,DC=local' }
+        }
+    }
+    'US' {
+        $OUPath = 'OU=US,OU=Users,OU=ZOO,DC=zoodigital,DC=local'
+    }
+}
+
+# Create the new mailbox
+try {
+    New-RemoteMailbox -First $FirstName -Last $LastName -Name $aduser -UserPrincipalName $UserPrincipalName -OnPremisesOrganizationalUnit $OUPath -PrimarySmtpAddress $UserPrincipalName -ResetPasswordOnNextLogon $true -ErrorAction Stop
+} catch {
+    if ($_.Exception.Message -match 'The length of the property is too long.') {
+        Write-Host "Error: The provided SamAccountName is too long. Please ensure it's within 20 characters." -ForegroundColor Red
+    } else {
+        Write-Host "An error occurred while creating the mailbox: $($_.Exception.Message)" -ForegroundColor Red
+    }
+}
+
+# Function to validate office input
+function GetOffice {
+    [CmdletBinding()]
+    param (
+        [string]$Prompt
+    )
+
+    $validOfficeValues = "Los Angeles", "Remote US", "los angeles", "remote us"
+    
+    while ($true) {
+        $Office = Read-Host -Prompt $Prompt
+        if ($validOfficeValues.Contains($Office)) {
+            break
+        }
+        Write-Host "Invalid input for Office. Please enter either 'Los Angeles' or 'Remote US'." -ForegroundColor Red
+    }
+    return $Office
+}
+
+# Initialize parameters
+$Param = @{}
+
+# Determine OU path based on region
+switch ($OU) {
+    'APAC' {
+        # Set office based on APAC region
+        switch ($apac_OU) {
+            'IN1' { $Param.Office = 'Mumbai' }
+            'IN2' { $Param.Office = 'Chennai' }
+            'JP1' { $Param.Office = 'Tokyo' }
+            'SG1' { $Param.Office = 'Singapore' }
+        }
+    }
+    'EMEA' {
+        # Set office based on EMEA region
+        switch ($emea_OU) {
+            'AE' { $Param.Office = 'Dubai' }
+            'DE1' { $Param.Office = 'Berlin' }
+            'ES1' { $Param.Office = 'Madrid' }
+            'IT1' { $Param.Office = 'Rome' }
+            'UK1' { $Param.Office = 'London' }
+            'UK2' { $Param.Office = 'Sheffield' }
+        }
+    }
+    'US' {
+        # Prompt for office input based on US region
+        $Param.Office = GetOffice -Prompt "Los Angeles or Remote US"
+    }
+}
+
+Write-Host "Entering AD Attributes" -ForegroundColor Green
+
+# Prompt user to enter job information
+try {
+    $Ti = Read-Host -Prompt "Enter Job Title" 
+    $Mana = Read-Host -Prompt "Reports to (First.LastName)" 
+
+    # Search for the manager across different domains
+    $DomainControllers = @("AE-S-DC-01.AE.ZOODIGITAL.LOCAL", "KR-S-DC-02.KR1.ZOODIGITAL.LOCAL", "UK-S-DC-04.UK.ZOODIGITAL.LOCAL", "US-S-DC-01.US.ZOODIGITAL.LOCAL", "IN1-S-DC-02.IN.ZOODIGITAL.LOCAL", "US-S-ROOT-DC-01.ZOODIGITAL.LOCAL")  # Add domain controllers for each domain
+    foreach ($DC in $DomainControllers) {
+        try {
+            $Manager = Get-ADUser -Identity $Mana -Server $DC -ErrorAction Stop
+            break  # Exit loop if manager is found in any domain
+        } catch {
+            Write-Host "Manager not found in domain $($DC.Split('.')[0])" -ForegroundColor Yellow
+        }
+    }
+
+    # If manager is found, update user information
+    if ($Manager) {
+        $Depart = Read-Host -Prompt "Department"
+        Set-ADUser -Identity $aduser -Title $Ti -Description $Ti -Manager $Manager -Department $Depart -Company 'ZOO Digital' @Param
+    } else {
+        Write-Host "Manager not found in any domain." -ForegroundColor Red
+    }
+}
+catch {
+    Write-Host "An error occurred: $($_.Exception.Message)" -ForegroundColor Red
+}
