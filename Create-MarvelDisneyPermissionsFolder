@@ -1,0 +1,63 @@
+#This was created by Christian Javier
+
+# Script for creating Disney Secure or Marvel project folders for Tier1 and Tier2 with modified permissions
+
+#### Before Running Script, Make sure the Security group is created first. The Security Group has to match the title name. ###
+
+### You will need NTFSSecurity Module to run this script, use the syntex below to install the module
+### Install-Module -Name NTFSSecurity
+
+#Example Syntex:
+#Create-MarvelDisneyPermissionFolders.ps1 [Enter]
+#"Disney or Marvel" Disney [Enter]
+#"Enter Title Name" titlename [Enter]
+
+# Prompt for studio name (Disney or Marvel) and title name
+Write-host 'Creating Disney Secure / Marvel Project Folders for Tier1 and Tier2' -ForegroundColor Green
+$studioName = Read-Host -Prompt 'Disney or Marvel'
+$TitleName = Read-host -Prompt 'Enter Title Name'
+
+# Getting ACL from the folders
+$getPermissions_Tier1 = Get-acl -Path "\\us-s-san-01\tier1_NEW\ZOO\IT\Permissions_Copy" 
+$getPermissions_Tier2 = Get-acl -Path "\\us-s-san-01\tier1_NEW\ZOO\IT\Permissions_Copy_tier2"
+
+# Path to Template Folders
+$pathToTemplate_T1 = "\\us-prod-nas-01\apps\IT\TESTinstall\_ProjectTemplate_Tier1\ProjectTemplate"
+$pathToTemplate_T2 = "\\us-prod-nas-01\apps\IT\TESTinstall\_ProjectTemplate_Tier2\ProjectTemplate"
+
+# Function to copy template and set permissions
+function Copy-Template-And-Set-Permissions {
+    param (
+        [string]$TemplatePath,
+        [string]$DestinationPath,
+        [System.Security.AccessControl.DirectorySecurity]$PermissionsTier
+    )
+
+    # Check if the project folder already exists
+    if (Test-Path -Path $DestinationPath) {
+        Write-Host "The project folder '$TitleName' already exists. Aborting folder creation." -ForegroundColor Red
+        return
+    }
+
+    # Copy template to destination
+    Copy-Item -Path $TemplatePath -Destination $DestinationPath -Recurse
+
+    # Set permissions on the new project folder
+    $PermissionsTier | Set-Acl -Path $DestinationPath
+
+    # Add NTFS access to the project folder based on studio name
+    $groupPrefix = if ($studioName -eq 'Marvel') { "marvel" } else { "disneysecure" }
+    $accountName = Get-ADGroup -Identity "$groupPrefix-$TitleName" -Server 'zoodigital.local'
+    Add-NTFSAccess -Path $DestinationPath -Account $accountName.Name -AccessRights Modify,DeleteSubdirectoriesAndFiles -AccessType Allow
+}
+
+
+# Copy Templates and set permissions based on studio name
+if ($studioName -eq "Disney") {
+    Copy-Template-And-Set-Permissions -TemplatePath $pathToTemplate_T1 -Destination "\\us-s-san-01\tier1_NEW\DISNEY_SECURE\$TitleName" -PermissionsTier $getPermissions_Tier1
+    Copy-Template-And-Set-Permissions -TemplatePath $pathToTemplate_T2 -Destination "\\us-s-san-01\tier2\DISNEY_SECURE\$TitleName" -PermissionsTier $getPermissions_Tier2
+}
+elseif ($studioName -eq 'Marvel') {
+    Copy-Template-And-Set-Permissions -TemplatePath $pathToTemplate_T1 -Destination "\\us-s-san-01\tier1_NEW\MARVEL\$TitleName" -PermissionsTier $getPermissions_Tier1
+    Copy-Template-And-Set-Permissions -TemplatePath $pathToTemplate_T2 -Destination "\\us-s-san-01\tier2\MARVEL\$TitleName" -PermissionsTier $getPermissions_Tier2
+}
