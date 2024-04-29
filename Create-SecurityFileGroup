@@ -1,0 +1,101 @@
+param (
+
+    [string]$Folder,
+    [string]$Identity,
+    [string]$MemberList = 'SecurityGroupMembers.txt'
+
+)
+
+
+## Edit this with the location of the password file
+$tempdir = 'C:\temp'
+## Edit this with you admin account
+$ADAccount = 'us\admin.christian'
+
+## Location of the file containing a list of members. Edit this if your file is located somewhere else
+$basedir = "C:\Users\christian.javier.US\Documents\scripts\"
+
+
+$file = $basedir + $MemberList
+$MembersToAdd = Get-Content $file
+
+## Determine if the group is for Marvel or Disney Secure
+
+if ($Folder -eq 'marvel') {
+    $NewGroup = 'US-Marvel-' + $Identity
+}
+elseif ($Folder -match 'disney') {
+    $NewGroup = 'US-DisneySecure-' + $Identity
+}
+else {
+    Write-Host $Folder 'is not a valid folder entry. Please enter Marvel or Disney.' -ForegroundColor Red
+    Exit
+}
+
+
+function Create-PwdFile {
+    $filename = 'temp1.txt'
+    Read-Host 'Enter Password for'$type -AsSecureString | ConvertFrom-SecureString | Out-File $tempdir'\'$filename > $null
+}
+
+function Prompt-User {
+    $input = Read-Host -Prompt 'Do you wish to continue? (y/N)'
+
+    if ($input -eq 'y' -or $input -eq 'yes') {
+        Return
+    }
+    else {
+        Exit
+    }
+}
+
+function Create-Group {
+
+    try {
+    New-ADGroup -Name $NewGroup -SamAccountName $NewGroup -GroupCategory Security -GroupScope Universal -DisplayName $NewGroup -Path "OU=SecurityFileGroups,OU=ZOOUS,DC=us,DC=zoodigital,DC=local" -Credential $AdAccountCreds
+    }
+    catch {
+    Write-Host 'Unable to create' $NewGroup 'group. Check that the group does not already exist.' -ForegroundColor Red
+    Exit
+    }
+}
+
+function Add-Members {
+    foreach($member in $MembersToAdd) {
+
+        try {
+            Add-ADGroupMember $NewGroup $Member -Credential $AdAccountCreds
+        }
+        catch {
+            Write-Host 'Unable to add' $member '. Check that the username exists.' -ForegroundColor Red
+        }
+    }
+}
+
+#Create Secure password files if they do not already exist
+if (-NOT (Test-Path $tempdir'\temp1.txt')) {
+    Create-PwdFile
+  } 
+
+# Create Account Credentials for Office 365 and AD
+$ADTxt = Get-Content $tempdir'\temp1.txt'
+$ADPwd = $ADTxt | ConvertTo-SecureString
+$AdAccountCreds = New-Object System.Management.Automation.PSCredential -ArgumentList $ADAccount, $ADPwd
+
+Import-Module ActiveDirectory -Cmdlet Add-ADGroupMember, Get-ADUser, Get-ADGroup, New-ADGroup
+
+
+
+if (Test-Path $file) {
+    Write-Host 'A new security file group will be created with the following name and memebers' -ForegroundColor yellow
+    Write-Host $NewGroup
+    Get-Content $file
+    Prompt-User
+    Write-Host 'creating group and adding members'
+    Create-Group
+    Add-Members
+
+}
+else {
+    Write-Host $MemberList 'does not exist' -ForegroundColor Red
+}
