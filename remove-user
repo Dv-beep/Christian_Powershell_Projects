@@ -1,0 +1,193 @@
+# This script automates the deactivation process for user accounts.
+# It performs various tasks including moving the user, removing access, handling shared mailboxes, and managing licenses.
+
+# Function to validate user input
+function Validate-UserName {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [ValidatePattern('[a-zA-Z\.]')]
+        [string]$UserName
+    )
+
+    return $UserName
+}
+
+# Function to validate numeric input in the format MM-DD-YY
+function Validate-DateInput {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$Desc
+    )
+
+    # Regular expression pattern to match the MM-DD-YY format
+    $pattern = "^\d{2}-\d{2}-\d{2}$"
+
+    # Loop until valid date input is provided
+    do {
+        # Check if the input matches the pattern
+        if ($Desc -match $pattern) {
+            return $true  # Input is in the correct format
+        } else {
+            Write-Host "Invalid input. Please enter a date in the format MM-DD-YY."
+            $Desc = Read-Host -Prompt "Deactivation Date MM-DD-YY"
+        }
+    } while ($true)
+}
+
+# Function to extract numerical value from a string
+function Extract-NumericalValue {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [string]$InputString
+    )
+
+    # Regular expression pattern to match numerical value
+    $pattern = '\d+'
+
+    # Match the numerical value in the input string
+    $match = [regex]::Match($InputString, $pattern)
+
+    if ($match.Success) {
+        return $match.Value
+    } else {
+        return $null
+    }
+}
+
+
+# Get user information
+Write-Host "Deactivation In Progress" -ForegroundColor Green
+try {
+    $UserName = Validate-UserName (Read-Host -Prompt "Enter username (First.Lastname)")
+    $User = Get-ADUser -Identity $UserName -ErrorAction Stop
+
+    # Specify the User ID or UserPrincipalName of the user
+    $UPN = $User.UserPrincipalName
+
+    # Obtain Users CN
+    $UserCN = $User.DistinguishedName
+
+    # Move User to the _ToBeDeleted OU
+    Move-ADObject -Identity $UserCN -TargetPath "OU=Users,OU=_ToBeDeleted,OU=ZOOUS,DC=us,DC=zoodigital,DC=local" -ErrorAction Stop
+
+    # Disable the user's AD account
+    Disable-ADAccount -Identity $UserName -ErrorAction Stop
+
+    # Set deactivation date in Description
+    $Desc = Read-Host -Prompt "Deactivation Date MM-DD-YY"
+    Validate-DateInput -Desc $Desc
+    Set-ADUser -Identity $UserName -Description $Desc -ErrorAction Stop
+
+    # Connect to Office 365
+    Connect-ExchangeOnline -ErrorAction Stop
+
+    # Remove user from groups
+    $getUserGroups = Get-ADUser -Identity $UserName -Properties MemberOf | Select-Object -ExpandProperty MemberOf
+
+    foreach ($group in $getUserGroups) {
+        try {
+            Remove-ADGroupMember -Identity $group -Members $UserName -Verbose -Confirm:$false -ErrorAction Stop
+        }
+        catch {
+            Write-Host "Removing Distro Groups" -ForegroundColor Green
+        }
+    }
+
+    # Define the user whose mailbox you want to convert
+    $SharedMailboxPrompt = Read-Host -Prompt "Manager Requesting Shared Mailbox? (Yes or No)"
+
+    if ($SharedMailboxPrompt -eq "Yes" -or $SharedMailboxPrompt -eq "y") {
+        # Prompt for the user to whom you want to assign the shared mailbox
+        $AssignedUser = Read-Host -Prompt "Enter Manager (first.lastname) to assign user's Mailbox" 
+        $AssignedUser = (Get-ADUser -Identity $AssignedUser -ErrorAction Stop).UserPrincipalName
+
+        # Convert the user's mailbox to a shared mailbox
+        Set-Mailbox -Identity $UPN -Type Shared -ErrorAction Stop
+
+        # Assign the shared mailbox to the user
+        Add-MailboxPermission -Identity $UPN -User $AssignedUser -AccessRights FullAccess -ErrorAction Stop
+
+        # Get the mailbox size
+        $MailboxSize = Get-MailboxStatistics -Identity $UPN | Select-Object -ExpandProperty TotalItemSize -ErrorAction Stop
+        
+        # Extract numerical value from the string
+        $MailboxSizeValue = Extract-NumericalValue -InputString $MailboxSize
+
+        # Convert to bytes
+        $MailboxSizeInBytes = [double]$MailboxSizeValue * 1KB
+
+        if ($MailboxSizeInBytes -ge (50 * 1GB)) {
+            Write-Host "Mailbox size is greater than or equal to 50,000 MB. License remains. Mailbox conversion complete."
+        } else {
+            # Prompt
+            Write-Host "Removing O365 License" -ForegroundColor Green
+
+            # Connect to Microsoft Graph API
+            Connect-Graph -Scopes User.ReadWrite.All, Organization.Read.All -NoWelcome -ErrorAction Stop
+
+            # Get the user's assigned licenses
+            $UserLicenses = Get-MgUserLicenseDetail -UserId $UPN -ErrorAction Stop
+
+            # Filter the assigned licenses to find the one to be removed
+            $LicenseToRemove = $UserLicenses.SkuId
+            $SkuIdToRemove = $UserLicenses.SkuId
+
+            # Check if the license to remove exists
+            if ($LicenseToRemove) {
+                # Create an array of license IDs to remove
+                $LicenseIdsToRemove = @($SkuIdToRemove)
+
+                # Remove the specified license from the user
+                Set-MgUserLicense -UserId $UPN -RemoveLicenses $LicenseIdsToRemove -AddLicenses @() -ErrorAction Stop
+
+                Write-Host "Removed license from user:" -ForegroundColor Yellow $UPN
+            } else {
+                Write-Host "License is not assigned to user: $UPN" -ForegroundColor Red
+            }
+
+            # Disconnect from Microsoft Graph API
+            Disconnect-Graph -ErrorAction Stop
+            Write-Host "Mailbox conversion completed." -ForegroundColor Green
+        }
+    }
+    else {
+        # Remove O365 License as shared mailbox conversion not requested
+        Write-Host "Removing O365 License as shared mailbox conversion not requested." -ForegroundColor Green
+
+        # Connect to Microsoft Graph API
+        Connect-Graph -Scopes User.ReadWrite.All, Organization.Read.All -NoWelcome -ErrorAction Stop
+
+        # Get the user's assigned licenses
+        $UserLicenses = Get-MgUserLicenseDetail -UserId $UPN -ErrorAction Stop
+
+        # Filter the assigned licenses to find the one to be removed
+        $LicenseToRemove = $UserLicenses.SkuId
+        $SkuIdToRemove = $UserLicenses.SkuId
+
+        # Check if the license to remove exists
+        if ($LicenseToRemove) {
+            # Create an array of license IDs to remove
+            $LicenseIdsToRemove = @($SkuIdToRemove)
+
+            # Remove the specified license from the user
+            Set-MgUserLicense -UserId $UPN -RemoveLicenses $LicenseIdsToRemove -AddLicenses @() -ErrorAction Stop
+
+            Write-Host "Removed license from user:" -ForegroundColor Yellow $UPN
+        } else {
+            Write-Host "License is not assigned to user: $UPN" -ForegroundColor Red
+        }
+
+        # Disconnect from Microsoft Graph API
+        Disconnect-Graph -ErrorAction Stop
+    }
+
+    Disconnect-ExchangeOnline -Confirm:$false -ErrorAction Stop
+
+    Write-Host "Deactivation Complete" -ForegroundColor Green
+}
+catch {
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+}
