@@ -1,0 +1,71 @@
+# Function to validate user input (accepts only alphabetic characters and dots)
+function ValidateName {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)]
+        [ValidatePattern('[a-zA-Z\.]+')]
+        [string]$Name
+    )
+
+    return $Name
+}
+
+# Display message to input new hire name
+Write-Host -ForegroundColor Green "Input New Hire Name"
+$aduser = Read-Host -Prompt "Enter username (First.Lastname)"
+$aduser = ValidateName -Name $aduser
+
+try {
+    # Connect to Microsoft Graph API
+    Connect-Graph -Scopes User.ReadWrite.All, Organization.Read.All -NoWelcome -ErrorAction Stop
+
+    # Get Microsoft Graph user information
+    $user = Get-MgUser -UserId "$aduser@zoodigital.com" -ErrorAction Stop
+
+    # Prompt user to enter user location
+    $userLoc = Read-Host -Prompt "User Location: IN, US"
+
+    # Update user usage location
+    Update-MgUser -UserId $user.UserPrincipalName -UsageLocation $userLoc
+
+    # Get subscription SKU for O365 Business Premium
+    $o365_license = Get-MgSubscribedSku -All | Where-Object { $_.SkuPartNumber -eq "O365_BUSINESS_PREMIUM" }
+
+    # Assign O365 Business Premium license to user
+    Set-MgUserLicense -UserId $user.UserPrincipalName -AddLicenses @{ SkuId = $o365_license.SkuId } -RemoveLicenses @()
+    
+    # Output success message
+    Write-Host "$aduser assigned $($o365_license.SkuPartNumber)" -ForegroundColor Yellow
+
+    # Prompt for distribution group names separated by comma
+    $groupInput = Read-Host 'Paste distribution group names here, separated by comma ","'
+    $userName = $aduser
+    
+    # Split the input into an array of group names, trimming whitespace
+    $groups = $groupInput -split ',' | ForEach-Object { $_.Trim() }
+
+    # Connect to Exchange Online
+    Connect-ExchangeOnline -UserPrincipalName christian.javier@zoodigital.com
+
+    # Iterate through the group names
+    foreach ($element in $groups){
+        # Check if the group exists
+        $groupExists = Get-DistributionGroup -Identity $element -ErrorAction SilentlyContinue
+        if ($groupExists) {
+            # Add the user to the group
+            Add-DistributionGroupMember -Identity $element -Member $userName
+            Write-Host "Added $userName to $element" -ForegroundColor Green
+        } else {
+            Write-Host "Group $element does not exist. Skipping." -ForegroundColor Yellow
+        }
+    }
+}
+catch {
+    # Handle any errors and display an error message
+    Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+}
+finally {
+    # Disconnect from Exchange Online
+    Disconnect-ExchangeOnline -Confirm:$false
+    Disconnect-MgGraph -Confirm:$false
+}
